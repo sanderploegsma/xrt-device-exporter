@@ -14,6 +14,8 @@ import (
 	"github.com/prometheus/exporter-toolkit/web/kingpinflag"
 )
 
+var version = "dev"
+
 func newHandler(logger *slog.Logger) http.Handler {
 	collector := NewCollector(logger)
 	registry := prometheus.NewRegistry()
@@ -38,10 +40,11 @@ func main() {
 	logconfig := &promslog.Config{}
 	flag.AddFlags(kingpin.CommandLine, logconfig)
 	kingpin.CommandLine.UsageWriter(os.Stdout)
+	kingpin.Version(version)
 	kingpin.Parse()
 	logger := promslog.New(logconfig)
 
-	logger.Info("Starting xrt-device-exporter")
+	logger.Info("Starting xrt-device-exporter", slog.String("version", version))
 
 	http.Handle(*metricsPath, newHandler(logger))
 
