@@ -39,8 +39,9 @@ func main() {
 	)
 	logconfig := &promslog.Config{}
 	flag.AddFlags(kingpin.CommandLine, logconfig)
-	kingpin.CommandLine.UsageWriter(os.Stdout)
 	kingpin.Version(version)
+	kingpin.CommandLine.HelpFlag.Short('h')
+	kingpin.CommandLine.VersionFlag.Short('v')
 	kingpin.Parse()
 	logger := promslog.New(logconfig)
 
