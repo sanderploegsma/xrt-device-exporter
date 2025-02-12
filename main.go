@@ -10,8 +10,9 @@ import (
 
 func main() {
 	collector := NewCollector()
-	prometheus.MustRegister(collector)
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collector)
 
-	http.Handle("/metrics", promhttp.Handler())
+	http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	log.Fatal(http.ListenAndServe(":9101", nil))
 }
