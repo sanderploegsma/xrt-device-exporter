@@ -6,7 +6,37 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+
+	"github.com/alecthomas/kingpin/v2"
 )
+
+var (
+	xrtPath = kingpin.Flag(
+		"xrt.path",
+		"Path to the XRT installation directory.",
+	).Default("/opt/xilinx/xrt").String()
+)
+
+func getDeviceJSON(opts ...string) ([]byte, error) {
+	f, err := os.CreateTemp("", "xbutil-output-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(f.Name())
+
+	executable := filepath.Join(*xrtPath, "bin", "xbutil")
+	args := []string{"examine"}
+	args = append(args, opts...)
+	args = append(args, "--format", "json", "--output", f.Name(), "--force")
+
+	cmd := exec.Command(executable, args...)
+	if err = cmd.Run(); err != nil {
+		return nil, err
+	}
+
+	return io.ReadAll(f)
+}
 
 type HostInformation struct {
 	Xrt struct {
@@ -26,12 +56,12 @@ func GetDevices() ([]string, error) {
 	}
 	defer os.Remove(f.Name())
 
-	cmd := exec.Command("/opt/xilinx/xrt/bin/xbutil", "examine", "--format", "json", "--output", f.Name(), "--force")
+	cmd := exec.Command(*xrtPath+"/bin/xbutil", "examine", "--format", "json", "--output", f.Name(), "--force")
 	if err = cmd.Run(); err != nil {
 		return nil, err
 	}
 
-	output, err := io.ReadAll(f)
+	data, err := getDeviceJSON()
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +71,7 @@ func GetDevices() ([]string, error) {
 			Host HostInformation `json:"host"`
 		} `json:"system"`
 	}
-	if err = json.Unmarshal(output, &info); err != nil {
+	if err = json.Unmarshal(data, &info); err != nil {
 		return nil, err
 	}
 
@@ -102,18 +132,7 @@ type DeviceInfo struct {
 func GetDeviceInfo(id string) (DeviceInfo, error) {
 	var empty DeviceInfo
 
-	f, err := os.CreateTemp("", "xbutil-output-*")
-	if err != nil {
-		return empty, err
-	}
-	defer os.Remove(f.Name())
-
-	cmd := exec.Command("/opt/xilinx/xrt/bin/xbutil", "examine", "--device", id, "--report", "thermal", "--report", "electrical", "--report", "platform", "--format", "json", "--output", f.Name(), "--force")
-	if err = cmd.Run(); err != nil {
-		return empty, err
-	}
-
-	output, err := io.ReadAll(f)
+	data, err := getDeviceJSON("--device", id, "--report", "thermal", "--report", "electrical", "--report", "platform")
 	if err != nil {
 		return empty, err
 	}
@@ -121,7 +140,7 @@ func GetDeviceInfo(id string) (DeviceInfo, error) {
 	var info struct {
 		Devices []DeviceInfo `json:"devices"`
 	}
-	if err = json.Unmarshal(output, &info); err != nil {
+	if err = json.Unmarshal(data, &info); err != nil {
 		return empty, err
 	}
 
