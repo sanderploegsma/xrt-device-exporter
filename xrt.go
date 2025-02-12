@@ -14,8 +14,8 @@ import (
 var (
 	xrtPath = kingpin.Flag(
 		"xrt.path",
-		"Path to the XRT installation directory.",
-	).Default("/opt/xilinx/xrt").String()
+		"Path to the XRT installation directory",
+	).Default("/opt/xilinx/xrt").Envar("XILINX_XRT").ExistingDir()
 )
 
 func getDeviceJSON(opts ...string) ([]byte, error) {
