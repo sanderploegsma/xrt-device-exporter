@@ -25,13 +25,14 @@ var (
 	).Default("5s").Duration()
 )
 
-type HostInformation struct {
+type HostInfo struct {
 	Xrt struct {
 		Version string `json:"version"`
 		Branch  string `json:"branch"`
 	} `json:"xrt"`
 	Devices []struct {
 		BDF     string `json:"bdf"`
+		VBNV    string `json:"vbnv"`
 		IsReady bool   `json:"is_ready,string"`
 	} `json:"devices"`
 }
@@ -86,8 +87,9 @@ type DeviceInfo struct {
 	Platforms     []PlatformInfo `json:"platforms"`
 }
 
-type DeviceInfoRepository interface {
-	GetDeviceInfo() []DeviceInfo
+type Xrt interface {
+	GetHostInfo() (HostInfo, error)
+	GetDeviceInfo(id string) (DeviceInfo, error)
 }
 
 type xrtWrapper struct {
@@ -95,12 +97,13 @@ type xrtWrapper struct {
 	xrtPath string
 }
 
-func NewDeviceInfoRepository(logger *slog.Logger) DeviceInfoRepository {
+func NewXrt(logger *slog.Logger) Xrt {
 	// TODO: verify whether xrtPath is valid
 
 	return &cache{
-		logger: logger,
-		ttl:    *cacheTtl,
+		logger:          logger,
+		ttl:             *cacheTtl,
+		deviceInfoCache: make(map[string]cachedDeviceInfo),
 		xrt: &xrtWrapper{
 			logger:  logger,
 			xrtPath: *xrtPath,
@@ -108,91 +111,69 @@ func NewDeviceInfoRepository(logger *slog.Logger) DeviceInfoRepository {
 	}
 }
 
-func (x *xrtWrapper) GetDeviceInfo() []DeviceInfo {
-	devices := make([]DeviceInfo, 0)
-
-	deviceIds, err := x.getDeviceIds()
-	if err != nil {
-		x.logger.Error("Failed to retrieve XRT device ids", slog.Any("error", err))
-		return devices
-	}
-
-	for _, id := range deviceIds {
-		info, err := x.getSingleDeviceInfo(id)
-		if err != nil {
-			x.logger.Error("Failed to retrieve XRT device info", slog.String("device", id), slog.Any("error", err))
-			continue
-		}
-
-		devices = append(devices, info)
-	}
-
-	return devices
-}
-
-func (x *xrtWrapper) getDeviceIds() ([]string, error) {
-	x.logger.Info("Retrieving XRT device ids")
-
+func (x *xrtWrapper) GetHostInfo() (HostInfo, error) {
+	x.logger.Debug("Creating temporary file")
 	f, err := os.CreateTemp("", "xbutil-output-*")
 	if err != nil {
-		return nil, err
+		return HostInfo{}, err
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		x.logger.Debug("Removing temporary file", slog.String("file", f.Name()))
+		os.Remove(f.Name())
+	}()
 
 	cmd := exec.Command(filepath.Join(x.xrtPath, "bin", "xbutil"), "examine", "--format", "json", "--output", f.Name(), "--force")
+	x.logger.Debug(fmt.Sprintf("Running command: %s", cmd.Args))
 	if err = cmd.Run(); err != nil {
-		return nil, err
+		return HostInfo{}, err
 	}
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, err
+		return HostInfo{}, err
 	}
 
 	var info struct {
 		System struct {
-			Host HostInformation `json:"host"`
+			Host HostInfo `json:"host"`
 		} `json:"system"`
 	}
 	if err = json.Unmarshal(data, &info); err != nil {
-		return nil, err
+		return HostInfo{}, err
 	}
 
-	devices := make([]string, 0)
-	for _, device := range info.System.Host.Devices {
-		if device.IsReady {
-			devices = append(devices, device.BDF)
-		}
-	}
-
-	return devices, nil
+	return info.System.Host, nil
 }
 
-func (x *xrtWrapper) getSingleDeviceInfo(id string) (DeviceInfo, error) {
-	x.logger.Info("Retrieving XRT device info", slog.String("device", id))
-	var empty DeviceInfo
+func (x *xrtWrapper) GetDeviceInfo(id string) (DeviceInfo, error) {
+	logger := x.logger.With(slog.String("device", id))
 
+	logger.Debug("Creating temporary file")
 	f, err := os.CreateTemp("", "xbutil-output-*")
 	if err != nil {
-		return empty, err
+		return DeviceInfo{}, err
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		logger.Debug("Removing temporary file", slog.String("file", f.Name()))
+		os.Remove(f.Name())
+	}()
 
 	cmd := exec.Command(filepath.Join(x.xrtPath, "bin", "xbutil"), "examine", "--device", id, "--report", "thermal", "--report", "electrical", "--report", "platform", "--format", "json", "--output", f.Name(), "--force")
+	logger.Debug(fmt.Sprintf("Running command: %s", cmd.Args))
 	if err = cmd.Run(); err != nil {
-		return empty, err
+		return DeviceInfo{}, err
 	}
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return empty, err
+		return DeviceInfo{}, err
 	}
 
 	var info struct {
 		Devices []DeviceInfo `json:"devices"`
 	}
 	if err = json.Unmarshal(data, &info); err != nil {
-		return empty, err
+		return DeviceInfo{}, err
 	}
 
 	for _, device := range info.Devices {
@@ -201,7 +182,17 @@ func (x *xrtWrapper) getSingleDeviceInfo(id string) (DeviceInfo, error) {
 		}
 	}
 
-	return empty, fmt.Errorf("no device with id %s", id)
+	return DeviceInfo{}, fmt.Errorf("no device with id %s", id)
+}
+
+type cachedDeviceInfo struct {
+	info   DeviceInfo
+	expiry time.Time
+}
+
+type cachedHostInfo struct {
+	info   HostInfo
+	expiry time.Time
 }
 
 type cache struct {
@@ -209,20 +200,52 @@ type cache struct {
 	xrt    *xrtWrapper
 	ttl    time.Duration
 
-	value  []DeviceInfo
-	expiry time.Time
+	deviceInfoCache map[string]cachedDeviceInfo
+	hostInfoCache   cachedHostInfo
 }
 
-func (c *cache) GetDeviceInfo() []DeviceInfo {
-	if time.Now().Before(c.expiry) {
-		c.logger.Info("Using cached device info")
-		return c.value
+func (c *cache) GetHostInfo() (HostInfo, error) {
+	if time.Now().Before(c.hostInfoCache.expiry) {
+		c.logger.Debug("Using cached host info")
+		return c.hostInfoCache.info, nil
 	}
 
-	c.logger.Debug("Cached device info expired or not set, refreshing")
+	c.logger.Debug("Cached host info expired or not set, refreshing")
+	info, err := c.xrt.GetHostInfo()
+	if err != nil {
+		return info, err
+	}
 
-	c.value = c.xrt.GetDeviceInfo()
-	c.expiry = time.Now().Add(c.ttl)
-	c.logger.Debug(fmt.Sprintf("Cached device info expires at %s", c.expiry))
-	return c.value
+	expiry := time.Now().Add(c.ttl)
+	c.hostInfoCache = cachedHostInfo{
+		info:   info,
+		expiry: expiry,
+	}
+
+	c.logger.Debug(fmt.Sprintf("Cached host info expires at: %s", expiry))
+	return info, nil
+}
+
+func (c *cache) GetDeviceInfo(id string) (DeviceInfo, error) {
+	logger := c.logger.With(slog.String("device", id))
+
+	if value, ok := c.deviceInfoCache[id]; ok && time.Now().Before(value.expiry) {
+		logger.Debug("Using cached device info")
+		return value.info, nil
+	}
+
+	logger.Debug("Cached device info expired or not set, refreshing")
+	info, err := c.xrt.GetDeviceInfo(id)
+	if err != nil {
+		return info, err
+	}
+
+	expiry := time.Now().Add(c.ttl)
+	c.deviceInfoCache[id] = cachedDeviceInfo{
+		info:   info,
+		expiry: expiry,
+	}
+
+	logger.Debug(fmt.Sprintf("Cached device info expires at %s", expiry))
+	return info, nil
 }
