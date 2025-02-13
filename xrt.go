@@ -64,6 +64,12 @@ type ElectricalInfo struct {
 }
 
 type PlatformInfo struct {
+	StaticRegion struct {
+		VBNV        string `json:"vbnv"`
+		LogicalUUID string `json:"logic_uuid"`
+		JTagIdCode  string `json:"jtag_idcode"`
+		FPGAName    string `json:"fpga_name"`
+	} `json:"static_region"`
 	Controller struct {
 		CardMgmtController struct {
 			SerialNumber string `json:"serial_number"`
