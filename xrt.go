@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/alecthomas/kingpin/v2"
 )
@@ -16,27 +18,12 @@ var (
 		"xrt.path",
 		"Path to the XRT installation directory",
 	).Default("/opt/xilinx/xrt").Envar("XILINX_XRT").ExistingDir()
+
+	cacheTtl = kingpin.Flag(
+		"xrt.cache-ttl",
+		"Time to cache XRT device information",
+	).Default("5s").Duration()
 )
-
-func getDeviceJSON(opts ...string) ([]byte, error) {
-	f, err := os.CreateTemp("", "xbutil-output-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(f.Name())
-
-	executable := filepath.Join(*xrtPath, "bin", "xbutil")
-	args := []string{"examine"}
-	args = append(args, opts...)
-	args = append(args, "--format", "json", "--output", f.Name(), "--force")
-
-	cmd := exec.Command(executable, args...)
-	if err = cmd.Run(); err != nil {
-		return nil, err
-	}
-
-	return io.ReadAll(f)
-}
 
 type HostInformation struct {
 	Xrt struct {
@@ -47,42 +34,6 @@ type HostInformation struct {
 		BDF     string `json:"bdf"`
 		IsReady bool   `json:"is_ready,string"`
 	} `json:"devices"`
-}
-
-func GetDevices() ([]string, error) {
-	f, err := os.CreateTemp("", "xbutil-output-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(f.Name())
-
-	cmd := exec.Command(*xrtPath+"/bin/xbutil", "examine", "--format", "json", "--output", f.Name(), "--force")
-	if err = cmd.Run(); err != nil {
-		return nil, err
-	}
-
-	data, err := getDeviceJSON()
-	if err != nil {
-		return nil, err
-	}
-
-	var info struct {
-		System struct {
-			Host HostInformation `json:"host"`
-		} `json:"system"`
-	}
-	if err = json.Unmarshal(data, &info); err != nil {
-		return nil, err
-	}
-
-	devices := make([]string, 0)
-	for _, device := range info.System.Host.Devices {
-		if device.IsReady {
-			devices = append(devices, device.BDF)
-		}
-	}
-
-	return devices, nil
 }
 
 type ThermalInfo struct {
@@ -129,10 +80,104 @@ type DeviceInfo struct {
 	Platforms     []PlatformInfo `json:"platforms"`
 }
 
-func GetDeviceInfo(id string) (DeviceInfo, error) {
+type DeviceInfoRepository interface {
+	GetDeviceInfo() []DeviceInfo
+}
+
+type xrtWrapper struct {
+	logger  *slog.Logger
+	xrtPath string
+}
+
+func NewDeviceInfoRepository(logger *slog.Logger) DeviceInfoRepository {
+	// TODO: verify whether xrtPath is valid
+
+	return &cache{
+		logger: logger,
+		ttl:    *cacheTtl,
+		xrt: &xrtWrapper{
+			logger:  logger,
+			xrtPath: *xrtPath,
+		},
+	}
+}
+
+func (x *xrtWrapper) GetDeviceInfo() []DeviceInfo {
+	devices := make([]DeviceInfo, 0)
+
+	deviceIds, err := x.getDeviceIds()
+	if err != nil {
+		x.logger.Error("Failed to retrieve XRT device ids", slog.Any("error", err))
+		return devices
+	}
+
+	for _, id := range deviceIds {
+		info, err := x.getSingleDeviceInfo(id)
+		if err != nil {
+			x.logger.Error("Failed to retrieve XRT device info", slog.String("device", id), slog.Any("error", err))
+			continue
+		}
+
+		devices = append(devices, info)
+	}
+
+	return devices
+}
+
+func (x *xrtWrapper) getDeviceIds() ([]string, error) {
+	x.logger.Info("Retrieving XRT device ids")
+
+	f, err := os.CreateTemp("", "xbutil-output-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(f.Name())
+
+	cmd := exec.Command(filepath.Join(x.xrtPath, "bin", "xbutil"), "examine", "--format", "json", "--output", f.Name(), "--force")
+	if err = cmd.Run(); err != nil {
+		return nil, err
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	var info struct {
+		System struct {
+			Host HostInformation `json:"host"`
+		} `json:"system"`
+	}
+	if err = json.Unmarshal(data, &info); err != nil {
+		return nil, err
+	}
+
+	devices := make([]string, 0)
+	for _, device := range info.System.Host.Devices {
+		if device.IsReady {
+			devices = append(devices, device.BDF)
+		}
+	}
+
+	return devices, nil
+}
+
+func (x *xrtWrapper) getSingleDeviceInfo(id string) (DeviceInfo, error) {
+	x.logger.Info("Retrieving XRT device info", slog.String("device", id))
 	var empty DeviceInfo
 
-	data, err := getDeviceJSON("--device", id, "--report", "thermal", "--report", "electrical", "--report", "platform")
+	f, err := os.CreateTemp("", "xbutil-output-*")
+	if err != nil {
+		return empty, err
+	}
+	defer os.Remove(f.Name())
+
+	cmd := exec.Command(filepath.Join(x.xrtPath, "bin", "xbutil"), "examine", "--device", id, "--report", "thermal", "--report", "electrical", "--report", "platform", "--format", "json", "--output", f.Name(), "--force")
+	if err = cmd.Run(); err != nil {
+		return empty, err
+	}
+
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return empty, err
 	}
@@ -151,4 +196,27 @@ func GetDeviceInfo(id string) (DeviceInfo, error) {
 	}
 
 	return empty, fmt.Errorf("no device with id %s", id)
+}
+
+type cache struct {
+	logger *slog.Logger
+	xrt    *xrtWrapper
+	ttl    time.Duration
+
+	value  []DeviceInfo
+	expiry time.Time
+}
+
+func (c *cache) GetDeviceInfo() []DeviceInfo {
+	if time.Now().Before(c.expiry) {
+		c.logger.Info("Using cached device info")
+		return c.value
+	}
+
+	c.logger.Debug("Cached device info expired or not set, refreshing")
+
+	c.value = c.xrt.GetDeviceInfo()
+	c.expiry = time.Now().Add(c.ttl)
+	c.logger.Debug(fmt.Sprintf("Cached device info expires at %s", c.expiry))
+	return c.value
 }

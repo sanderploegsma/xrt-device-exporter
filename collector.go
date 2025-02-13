@@ -15,6 +15,7 @@ func powerConsumptionWarningValue(info DeviceInfo) float64 {
 
 type collector struct {
 	logger                  *slog.Logger
+	repository              DeviceInfoRepository
 	temperature             *prometheus.Desc
 	voltage                 *prometheus.Desc
 	current                 *prometheus.Desc
@@ -25,7 +26,8 @@ type collector struct {
 
 func NewCollector(logger *slog.Logger) prometheus.Collector {
 	return &collector{
-		logger: logger,
+		logger:     logger,
+		repository: NewDeviceInfoRepository(logger),
 		temperature: prometheus.NewDesc("xrt_device_temperature",
 			"Temperature of the device in degrees Celsius",
 			[]string{"device_id", "serial", "location_id", "description"},
@@ -69,21 +71,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
-	c.logger.Debug("Retrieving XRT devices")
-	devices, err := GetDevices()
-	if err != nil {
-		c.logger.Error("Failed to retrieve XRT devices", slog.Any("error", err))
-		return
-	}
-
-	for _, device := range devices {
-		c.logger.Debug("Retrieving XRT device info", slog.String("device", device))
-		info, err := GetDeviceInfo(device)
-		if err != nil {
-			c.logger.Error("Failed to retrieve XRT device info", slog.String("device", device), slog.Any("error", err))
-			continue
-		}
-
+	for _, info := range c.repository.GetDeviceInfo() {
 		serial := info.Platforms[0].Controller.CardMgmtController.SerialNumber
 
 		for _, t := range info.Thermals {
@@ -106,5 +94,4 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.powerConsumptionMax, prometheus.GaugeValue, info.Electrical.PowerConsumptionMaxWatts, info.DeviceID, serial)
 		ch <- prometheus.MustNewConstMetric(c.powerConsumptionWarning, prometheus.GaugeValue, powerConsumptionWarningValue(info), info.DeviceID, serial)
 	}
-	c.logger.Debug("Collect finished")
 }

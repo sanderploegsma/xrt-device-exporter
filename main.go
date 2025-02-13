@@ -24,7 +24,7 @@ func newHandler(logger *slog.Logger) http.Handler {
 	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		ErrorLog:            slog.NewLogLogger(logger.Handler(), slog.LevelError),
 		ErrorHandling:       promhttp.ContinueOnError,
-		MaxRequestsInFlight: 1,
+		MaxRequestsInFlight: 0,
 	})
 }
 
