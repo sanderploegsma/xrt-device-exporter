@@ -17,7 +17,7 @@ func bool2gauge(value bool) float64 {
 type collector struct {
 	logger                        *slog.Logger
 	xrt                           Xrt
-	xrtStatus                     *prometheus.Desc
+	xrtInfo                       *prometheus.Desc
 	deviceReady                   *prometheus.Desc
 	deviceTemperature             *prometheus.Desc
 	deviceVoltage                 *prometheus.Desc
@@ -31,8 +31,8 @@ func NewCollector(logger *slog.Logger) prometheus.Collector {
 	return &collector{
 		logger: logger,
 		xrt:    NewXrt(logger),
-		xrtStatus: prometheus.NewDesc("xrt_status",
-			"Whether the XRT is available",
+		xrtInfo: prometheus.NewDesc("xrt_info",
+			"Information about the Xilinx XRT environment",
 			[]string{"version", "branch"},
 			nil,
 		),
@@ -75,7 +75,7 @@ func NewCollector(logger *slog.Logger) prometheus.Collector {
 }
 
 func (c *collector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.xrtStatus
+	ch <- c.xrtInfo
 	ch <- c.deviceReady
 	ch <- c.deviceTemperature
 	ch <- c.deviceVoltage
@@ -90,11 +90,11 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	hostInfo, err := c.xrt.GetHostInfo()
 	if err != nil {
 		c.logger.Error("Failed to retrieve XRT host info", slog.Any("error", err))
-		ch <- prometheus.MustNewConstMetric(c.xrtStatus, prometheus.GaugeValue, 0, "unknown", "unknown")
+		ch <- prometheus.MustNewConstMetric(c.xrtInfo, prometheus.GaugeValue, 0, "unknown", "unknown")
 		return
 	}
 
-	ch <- prometheus.MustNewConstMetric(c.xrtStatus, prometheus.GaugeValue, 1, hostInfo.Xrt.Version, hostInfo.Xrt.Branch)
+	ch <- prometheus.MustNewConstMetric(c.xrtInfo, prometheus.GaugeValue, 1, hostInfo.Xrt.Version, hostInfo.Xrt.Branch)
 
 	for _, device := range hostInfo.Devices {
 		deviceLogger := c.logger.With(slog.String("device", device.BDF))

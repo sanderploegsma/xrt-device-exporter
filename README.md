@@ -74,6 +74,6 @@ Make sure the Xilinx XRT is installed.
     xrt_device_voltage{description="Internal FPGA Vcc IO",device_id="0000:d1:00.1",location_id="vccint_io",serial="000000000000",shell="xilinx_u55c_gen3x16_xdma_base_3"} 0.855
     xrt_device_voltage{description="Mgt Vtt",device_id="0000:d1:00.1",location_id="mgt_vtt",serial="000000000000",shell="xilinx_u55c_gen3x16_xdma_base_3"} 1.2
     xrt_device_voltage{description="Vpp 2.5 Volts",device_id="0000:d1:00.1",location_id="vpp2v5",serial="000000000000",shell="xilinx_u55c_gen3x16_xdma_base_3"} 2.489
-    # HELP xrt_status Whether the XRT is available
-    # TYPE xrt_status gauge
-    xrt_status{branch="2022.2",version="2.14.354"} 1
+    # HELP xrt_info Information about the Xilinx XRT environment
+    # TYPE xrt_info gauge
+    xrt_info{branch="2022.2",version="2.14.354"} 1
